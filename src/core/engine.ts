@@ -640,6 +640,7 @@ export class Oracle {
     this.report({ type: "phase", phase: "verify" })
     // Probe the plausible ones first so an early stop keeps the best results.
     const queue = [...this.candidates.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 120)
+    const pending: Candidate[] = []
 
     await mapLimit(queue, Math.max(2, Math.floor(this.options.concurrency / 2)), async (candidate) => {
       if (this.aborted || this.enoughFound()) return
@@ -655,10 +656,46 @@ export class Oracle {
       for (const extra of outcome.discovered) {
         const identity = key(extra.url)
         if (this.candidates.has(identity)) continue
-        // Renditions of a verified master inherit its proof.
-        this.candidates.set(identity, { ...extra, verified: true })
+        this.candidates.set(identity, extra)
         this.report({ type: "candidate", candidate: extra })
+        pending.push(extra)
       }
+    })
+
+    // Second pass over the renditions a master playlist revealed.
+    //
+    // These used to inherit the master's "verified" without ever being
+    // requested — which is exactly how Oracle came to hand out a URL that a
+    // player could not open. A rendition behind a signing CDN needs its own
+    // proof, so it gets its own request.
+    if (!pending.length || this.aborted) return
+    this.report({ type: "phase", phase: "verify-renditions", detail: `${pending.length}` })
+
+    await mapLimit(pending.slice(0, 40), Math.max(2, Math.floor(this.options.concurrency / 2)), async (candidate) => {
+      if (this.aborted) return
+      const target = candidate.signedUrl ?? candidate.url
+      this.report({ type: "probe", url: target })
+      const outcome = await probeCandidate(
+        this.http,
+        { ...candidate, url: target },
+        {
+          timeout: this.options.timeout,
+          // Renditions are leaves; expanding again would loop.
+          expandVariants: false,
+          tokenEndpoints: [...this.tokenEndpoints],
+        },
+      )
+      const settled: Candidate = {
+        ...outcome.candidate,
+        url: candidate.url,
+        // A media playlist names no resolution — only the master that pointed
+        // here did. Keep it, or every rendition renders as an identical row.
+        resolution: outcome.candidate.resolution ?? candidate.resolution,
+        note: outcome.candidate.note ?? candidate.note,
+        signedUrl: outcome.candidate.signedUrl ?? (candidate.signedUrl && outcome.candidate.verified ? candidate.signedUrl : undefined),
+      }
+      this.candidates.set(key(candidate.url), settled)
+      this.report({ type: "probed", candidate: settled })
     })
   }
 
@@ -695,6 +732,7 @@ export class Oracle {
    */
   private rank(): Candidate[] {
     return this.dropShadows([...this.candidates.values()])
+      .map(demoteUnplayableMaster)
       .sort((a, b) => {
         // Verified beats unverified, then confidence, then shallower depth.
         const verifiedDelta = Number(b.verified ?? false) - Number(a.verified ?? false)
@@ -765,6 +803,26 @@ function collectInlineScripts(html: string): string {
   // Semicolons between blocks: a truncated expression must not swallow the
   // next script's first statement.
   return parts.join("\n;\n")
+}
+
+/**
+ * Pushes a signed master playlist below its own renditions.
+ *
+ * HLS resolves the URIs inside a playlist against the path, discarding the
+ * query — so a signed master hands a player rendition URLs with no signature,
+ * and every one of them 403s. The master is still worth reporting (it names the
+ * renditions), but it must not be the first URL a pipeline picks up, because it
+ * is the one thing here that cannot be played.
+ */
+function demoteUnplayableMaster(candidate: Candidate): Candidate {
+  if (!candidate.signedUrl || !candidate.variants?.length) return candidate
+  return {
+    ...candidate,
+    confidence: Math.max(0, candidate.confidence - 8),
+    note: candidate.note
+      ? `${candidate.note} · renditions need the token too`
+      : "renditions need the token too",
+  }
 }
 
 /** Same registrable domain — keeps API chasing from wandering off-site. */

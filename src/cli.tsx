@@ -204,10 +204,15 @@ async function runInteractive(args: ParsedArgs, digOptions: Partial<DigOptions>)
     }, 60)
   })
 
-  // A parting summary, so the useful bit survives after the UI is gone.
-  if (result?.candidates.length) {
-    const best = result.candidates[0]!
-    process.stdout.write(`${best.url}\n`)
+  // A parting summary, so the useful bit survives after the UI is gone. Print
+  // the playable (signed) form of every verified stream, not just the first
+  // one's bare URL — this is what someone pastes into mpv.
+  const playable = (result?.candidates ?? []).filter((candidate) => candidate.verified === true)
+  for (const candidate of playable.slice(0, 10)) {
+    process.stdout.write(`${candidate.signedUrl ?? candidate.url}\n`)
+  }
+  if (!playable.length && result?.candidates.length) {
+    process.stdout.write(`${result.candidates[0]!.signedUrl ?? result.candidates[0]!.url}\n`)
   }
   process.exit(0)
 }

@@ -90,17 +90,28 @@ export async function probeCandidate(
             : `vod · ${formatDuration(playlist.durationSec)}`
 
       if (options.expandVariants && playlist.kind === "master") {
+        // A signature lives in the query string, and HLS resolves its relative
+        // URIs against the *path* only — so every rendition inside a signed
+        // master comes out unsigned and 403s the moment a player follows it.
+        // Carry the master's query down to each rendition.
+        const inherited = queryOf(response.finalUrl)
         for (const variant of playlist.variants) {
+          const signed = inherited && !queryOf(variant.url) ? withQuery(variant.url, inherited) : undefined
           discovered.push({
             ...candidate,
             url: variant.url,
+            signedUrl: signed,
+            tokenEndpoint: signed ? candidate.tokenEndpoint : undefined,
             kind: "hls",
-            via: [...candidate.via, "hls-variant"],
+            via: signed ? [...candidate.via, "hls-variant", "token-signed"] : [...candidate.via, "hls-variant"],
             origin: response.finalUrl,
             depth: candidate.depth + 1,
             resolution: variant.resolution,
             confidence: clamp(result.confidence - 2),
             note: describeBandwidth(variant.bandwidth, variant.resolution),
+            // Cleared so the caller probes these rather than trusting the
+            // master's word for them.
+            verified: undefined,
           })
         }
       }
@@ -216,6 +227,25 @@ export function initialConfidence(candidate: Pick<Candidate, "kind" | "via" | "u
 
 function clamp(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+/** The query string of a URL, without the `?`. Empty when there is none. */
+function queryOf(url: string): string {
+  try {
+    return new URL(url).search.replace(/^\?/, "")
+  } catch {
+    return ""
+  }
+}
+
+function withQuery(url: string, query: string): string | undefined {
+  try {
+    const parsed = new URL(url)
+    parsed.search = `?${query}`
+    return parsed.toString()
+  } catch {
+    return undefined
+  }
 }
 
 function describeBandwidth(bandwidth: number | undefined, resolution: string | undefined): string {

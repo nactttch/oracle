@@ -515,7 +515,7 @@ function ResultsScreen({
   const verified = candidates.filter((candidate) => candidate.verified === true).length
 
   // Keep the cursor in view without redrawing the whole list every frame.
-  const visible = 8
+  const visible = 6
   const start = Math.max(0, Math.min(selected - Math.floor(visible / 2), candidates.length - visible))
   const window = candidates.slice(Math.max(0, start), Math.max(0, start) + visible)
   const offset = Math.max(0, start)
@@ -536,11 +536,18 @@ function ResultsScreen({
           const status = statusGlyph(candidate)
           const tone = status.tone === "ok" ? theme.ok : status.tone === "bad" ? theme.bad : theme.warn
           const label = candidate.server ? `${candidate.server}` : ""
-          const room = contentWidth - 6 - (label ? label.length + 3 : 0) - 10
+          // Renditions of one stream share a host and a filename, so the URL
+          // alone renders six identical-looking rows. Lead with what actually
+          // differs between them.
+          const quality = candidate.resolution
+            ? `${candidate.resolution.split("x")[1] ?? candidate.resolution}p`
+            : candidate.kind.toUpperCase()
+          const room = contentWidth - 6 - (label ? label.length + 3 : 0) - 8
           return (
             <text key={candidate.url}>
               <span fg={isSelected ? theme.accent : theme.dim}>{isSelected ? "❯ " : "  "}</span>
               <span fg={tone}>{`${status.glyph} `}</span>
+              <span fg={isSelected ? theme.fg : theme.accent}>{quality.padEnd(6)}</span>
               <span fg={isSelected ? theme.fg : theme.dim}>{shortenUrl(candidate.url, Math.max(16, room))}</span>
               {label ? <span fg={theme.accent}>{`  [${label}]`}</span> : null}
             </text>
@@ -552,6 +559,19 @@ function ResultsScreen({
           </text>
         ) : null}
       </Panel>
+
+      {current ? (
+        <Panel title={current.signedUrl ? "playable url · token-signed" : "playable url"} theme={theme} width={width}>
+          {/* The whole URL, wrapped rather than shortened. Truncating the one
+              thing the user came for made them quit the UI and re-run the
+              headless command just to read it. */}
+          {wrap(current.signedUrl ?? current.url, contentWidth).map((line, index) => (
+            <text key={index}>
+              <span fg={theme.ok}>{line}</span>
+            </text>
+          ))}
+        </Panel>
+      ) : null}
 
       {current ? (
         <Panel title="selected" theme={theme} width={width}>
@@ -761,7 +781,8 @@ function wrap(text: string, width: number): string[] {
   if (width <= 0) return [text]
   const lines: string[] = []
   for (let index = 0; index < text.length; index += width) lines.push(text.slice(index, index + width))
-  return lines.slice(0, 4)
+  // Signed URLs run long; 6 lines covers a token plus its path and expiry.
+  return lines.slice(0, 6)
 }
 
 // Local alias so the screens don't each import the theme type.

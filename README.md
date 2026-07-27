@@ -192,6 +192,14 @@ shape-driven — parameter names and response formats are tried in turn, handlin
 query string, a JSON token, a complete replacement URL, or a bare token — so it isn't tied
 to any one provider.
 
+**Signatures propagate to renditions.** HLS resolves the URIs inside a playlist against the
+*path*, discarding the query — so a signed master hands a player rendition URLs with no
+signature, and every one of them 403s. (This is the single most common way a "working"
+extracted URL fails in `mpv`.) Oracle carries the signature down to each rendition and then
+**probes each one individually** rather than trusting the master's word, so what it reports
+verified is what it actually requested. A signed master ranks *below* its own renditions,
+because it is the one URL there that cannot be played directly.
+
 The report gives you both: the bare URL plus its signer (the reusable pair) and the signed
 URL that plays right now.
 
@@ -286,7 +294,7 @@ ones the page you gave it talks to.
 ```bash
 bun install
 bun run dev https://site.tld/x   # run from source
-bun test                         # 118 tests
+bun test                         # 120 tests
 bun run typecheck
 bun run build
 ```
