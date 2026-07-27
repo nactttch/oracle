@@ -48,16 +48,7 @@ Oracle runs on [Bun](https://bun.sh) — free, one line, no admin rights:
 curl -fsSL https://bun.sh/install | bash
 ```
 
-Then:
-
-```bash
-bun install -g oracle-stream
-```
-
-Now type `oracle` anywhere.
-
-<details>
-<summary>From source</summary>
+Then clone and link it:
 
 ```bash
 git clone https://github.com/YOUR-USERNAME/oracle.git
@@ -67,7 +58,10 @@ bun run build
 bun link          # puts `oracle` on your PATH
 ```
 
-</details>
+Now type `oracle` anywhere. (Restart your shell if the command isn't found —
+`bun link` installs into `~/.bun/bin`, which Bun's installer adds to your `PATH`.)
+
+Once it's published to npm, `bun install -g oracle-stream` will do the same in one step.
 
 ## Use it
 
@@ -100,7 +94,14 @@ Most extractors are a regex for `.m3u8` over a page's HTML. That finds the easy 
 nothing else, because the interesting cases hide the URL behind packing, base64, a hex
 string table, and a runtime string concatenation — often all four at once.
 
-Oracle runs four layers over every document it touches.
+Oracle runs six layers, escalating: each one only exists because the ones above it
+come back empty on real sites.
+
+**Formats it looks for** — not just HLS: `.m3u8`/`.m3u`, DASH `.mpd`, Smooth Streaming
+(`.ism`/`Manifest`), Adobe HDS `.f4m`, MP4/WebM/MKV/MOV, FLV, raw MPEG-TS, audio-only
+(AAC/MP3/M4A/Opus), and the streaming protocols `rtmp(s)`, `rtsp`, `srt`, `ws(s)`, and
+WebRTC `whep`/`whip`. Extensionless manifests behind a signing CDN are caught too, by
+probing rather than by pattern.
 
 ### 1. The document graph
 
@@ -123,7 +124,7 @@ Passes re-run until the text stops changing, because obfuscators stack.
 
 ### 3. The honeypot 🍯
 
-This is the part that makes Oracle different.
+The first part that makes Oracle different.
 
 Player bootstraps are written against a browser and nothing else. Run one in a bare VM
 and it dies on line 1 at `document.getElementById` — long before it reveals anything. The
@@ -145,10 +146,59 @@ drains pending timers, so a URL assembled inside a `setTimeout` is caught too. E
 the script asked for get queued and followed, so the manifest that only exists as a JSON
 API response is found as well.
 
+**One session per page.** All of a page's scripts — inline and external — run in *one*
+shared global, in document order. This matters more than it sounds: a webpack, Nuxt or
+Vite build is a runtime chunk plus N payload chunks that hand each other modules through a
+shared global. Run each file in its own context and every chunk registers into a global
+nobody else can see, so the app never boots and never asks for its stream.
+
 Containment: `node:vm` with a wall-clock timeout, no network, no filesystem, no host
 globals — `process` and `require` are absent, exactly as they are in a browser.
 
-### 4. Verification
+### 4. API synthesis — the "open the Network tab" move
+
+Sometimes the bundle still won't boot: it wants a router, a real DOM, a mounted component
+tree. The page ships **no stream URL at all** — it boots, reads an id out of its own route,
+calls its backend, and the manifest arrives in a JSON response. There is nothing for static
+analysis to find, because there is nothing there.
+
+A human debugging this doesn't fight the bundle. They open DevTools, watch one XHR go past,
+and read the manifest out of the response. Oracle does the same thing deductively:
+
+1. Take the API origins the bundle mentions (ranked — a host named `api` beats a CDN, and
+   platform hosts are excluded so a page embedding YouTube doesn't send it chasing
+   `youtube.com/api/...`).
+2. Take the identifiers out of the page's own route — `/events/73_arryadia_k2tgcj0` yields
+   the id, and `events` as its collection.
+3. Reconstruct the request the app would have made, likeliest shape first.
+
+The winning shape is usually the dullest: an SPA route of `/events/{id}` is served by
+`/api/events/{id}` on the API host, because the same team wrote both and mirrored the paths.
+JSON that comes back is walked recursively — config endpoints chain, and the manifest is
+often one more hop in.
+
+This only fires for a page that gave up nothing playable, since it costs a burst of requests.
+
+### 5. Token signing
+
+A large share of "I found the m3u8 but it 403s" is neither geo-blocking nor a missing
+`Referer`. The CDN wants a short-lived signature, and the player gets one by asking a token
+service that hands them to anybody — no login, no credential. The player does this in the
+open on every page load, and a dig that stops at the 403 has stopped one request too early.
+
+So on a 401/403, Oracle finds the signing service among URLs it already saw (by name, or
+from a config key like `TOKEN_SERVER_URL`), asks it to sign the manifest, and retries. It's
+shape-driven — parameter names and response formats are tried in turn, handling a returned
+query string, a JSON token, a complete replacement URL, or a bare token — so it isn't tied
+to any one provider.
+
+The report gives you both: the bare URL plus its signer (the reusable pair) and the signed
+URL that plays right now.
+
+This deliberately stops short of decryption. An AES-128 or Widevine stream is **reported as
+encrypted and left alone** — signing a request is authorisation plumbing, not breaking DRM.
+
+### 6. Verification
 
 A `.m3u8` sitting in a page proves nothing; plenty are stale demos or decoys. Oracle
 replays each candidate with the right `Referer`, parses the manifest, and reports what is
@@ -228,14 +278,15 @@ Three, all runtime, all free: `@opentui/core`, `@opentui/react`, `react`.
 
 The extraction engine itself has **zero** dependencies — `fetch`, `node:vm` and regex.
 No headless browser, no `yt-dlp`, no `ffmpeg` required to find a stream. Nothing paid,
-no API keys, no account.
+no API keys, no account, no third-party service. The only hosts Oracle talks to are the
+ones the page you gave it talks to.
 
 ## Development
 
 ```bash
 bun install
 bun run dev https://site.tld/x   # run from source
-bun test                         # 93 tests
+bun test                         # 118 tests
 bun run typecheck
 bun run build
 ```
@@ -249,8 +300,11 @@ src/
     http.ts          fetch + cookie jar + manual redirects + concurrency gate
     extract.ts       URL harvesting and classification
     deobfuscate.ts   packer, escapes, charcodes, concat, base64, hex
-    sandbox.ts       the Proxy-global honeypot DOM
+    sandbox.ts       the Proxy-global honeypot DOM (shared session per page)
+    api.ts           API endpoint synthesis from route ids + bundle origins
+    token.ts         signing services, for manifests that 403 unsigned
     servers.ts       sibling-server discovery by novelty
+    platforms.ts     YouTube/Dailymotion embeds, reported not chased
     hls.ts           m3u8 / mpd parsing
     probe.ts         verification and confidence scoring
   components/        logo, panels, shortcut bar

@@ -67,12 +67,32 @@ const HOST_GLOBALS = new Set([
   "vm",
 ])
 
-export function runInHoneypot(code: string, options: SandboxOptions): SandboxResult {
+/**
+ * A browsing context that survives across scripts.
+ *
+ * Bundlers are the reason this exists. A webpack or Vite build is a runtime
+ * chunk plus N payload chunks that hand each other modules through a shared
+ * global (`webpackJsonp`, `__NUXT__`, an import map). Run each file in its own
+ * context — as an earlier version of Oracle did — and every chunk registers
+ * into a global nobody else can see, so the app never boots and never asks for
+ * its stream. One session per document fixes that: scripts run in order, in one
+ * global, exactly as the browser would have run them.
+ */
+export interface HoneypotSession {
+  /** Executes one script in the shared context. Never throws. */
+  run(code: string, filename?: string): { error?: string; timedOut: boolean }
+  /** Runs queued timers and microtasks. Call after the last script. */
+  drain(): void
+  readonly hits: SandboxHit[]
+  readonly evaluated: string[]
+  readonly written: string[]
+}
+
+export function createHoneypot(options: SandboxOptions): HoneypotSession {
   const hits: SandboxHit[] = []
   const evaluated: string[] = []
   const written: string[] = []
-  const maxHits = options.maxHits ?? 4000
-  let timedOut = false
+  const maxHits = options.maxHits ?? 6000
 
   const bridge = {
     record(value: unknown, path: unknown, network: unknown) {
@@ -141,43 +161,79 @@ export function runInHoneypot(code: string, options: SandboxOptions): SandboxRes
   })
 
   try {
-    vm.runInContext(BOOTSTRAP, context, { timeout: 1500, filename: "oracle-honeypot.js" })
-
-    // Phase two: unknown identifiers now resolve to ghosts instead of
-    // undefined, so `SomePlayerLib.setup(...)` works for a library that was
-    // never loaded.
-    const intrinsics = globals.__oracle_intrinsics__ as Record<string, unknown> | undefined
-    const ghostFor = globals.__oracle_global_ghost__ as ((name: string) => unknown) | undefined
-    handler.get = (target, prop) => {
-      if (prop in target) return target[prop as string]
-      if (typeof prop === "symbol") return undefined
-      const name = String(prop)
-      // `undefined` reaches the interceptor like any other global name, and
-      // handing back a ghost would poison every `x === undefined` in the wild.
-      if (name === "undefined") return undefined
-      // Host-runtime names stay absent. A ghost here would be both a lie about
-      // the environment (browsers have no `process`) and a standing invitation
-      // to wonder whether the real one is reachable. It never is.
-      if (HOST_GLOBALS.has(name)) return undefined
-      // Plain snapshot object, so this lookup can't re-enter the traps.
-      if (intrinsics && name in intrinsics) return intrinsics[name]
-      return ghostFor ? ghostFor(name) : undefined
-    }
-
-    vm.runInContext(code, context, {
-      timeout: options.timeout ?? 4000,
-      filename: "target.js",
-    })
-    // Give queued timers/microtasks one chance to run — many players resolve a
-    // stream inside a setTimeout(0) or a .then().
-    vm.runInContext("__oracle_drain__()", context, { timeout: 1500 })
+    vm.runInContext(BOOTSTRAP, context, { timeout: 2000, filename: "oracle-honeypot.js" })
   } catch (error) {
+    // The honeypot itself failed to install; the session is unusable but must
+    // not take the dig down with it.
     const message = error instanceof Error ? error.message : String(error)
-    timedOut = /timed out/i.test(message)
-    return { hits, evaluated, written, error: message, timedOut }
+    return {
+      hits,
+      evaluated,
+      written,
+      run: () => ({ error: message, timedOut: false }),
+      drain: () => {},
+    }
   }
 
-  return { hits, evaluated, written, timedOut }
+  // Phase two: unknown identifiers now resolve to ghosts instead of undefined,
+  // so `SomePlayerLib.setup(...)` works for a library that was never loaded.
+  const intrinsics = globals.__oracle_intrinsics__ as Record<string, unknown> | undefined
+  const ghostFor = globals.__oracle_global_ghost__ as ((name: string) => unknown) | undefined
+  handler.get = (target, prop) => {
+    if (prop in target) return target[prop as string]
+    if (typeof prop === "symbol") return undefined
+    const name = String(prop)
+    // `undefined` reaches the interceptor like any other global name, and
+    // handing back a ghost would poison every `x === undefined` in the wild.
+    if (name === "undefined") return undefined
+    // Host-runtime names stay absent. A ghost here would be both a lie about
+    // the environment (browsers have no `process`) and a standing invitation to
+    // wonder whether the real one is reachable. It never is.
+    if (HOST_GLOBALS.has(name)) return undefined
+    // Plain snapshot object, so this lookup can't re-enter the traps.
+    if (intrinsics && name in intrinsics) return intrinsics[name]
+    return ghostFor ? ghostFor(name) : undefined
+  }
+
+  const timeout = options.timeout ?? 5000
+
+  return {
+    hits,
+    evaluated,
+    written,
+    run(code: string, filename = "target.js") {
+      try {
+        vm.runInContext(code, context, { timeout, filename })
+        return { timedOut: false }
+      } catch (error) {
+        // One bad chunk must not stop the rest: a bundle whose third file
+        // throws can still have leaked the manifest in its second.
+        const message = error instanceof Error ? error.message : String(error)
+        return { error: message, timedOut: /timed out/i.test(message) }
+      }
+    },
+    drain() {
+      try {
+        vm.runInContext("__oracle_drain__()", context, { timeout: 2000 })
+      } catch {
+        /* a timer that hangs has still had its chance */
+      }
+    },
+  }
+}
+
+/** Single-shot convenience wrapper around a session. */
+export function runInHoneypot(code: string, options: SandboxOptions): SandboxResult {
+  const session = createHoneypot(options)
+  const outcome = session.run(code)
+  session.drain()
+  return {
+    hits: session.hits,
+    evaluated: session.evaluated,
+    written: session.written,
+    error: outcome.error,
+    timedOut: outcome.timedOut,
+  }
 }
 
 /**

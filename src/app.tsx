@@ -166,8 +166,9 @@ export function App({ initialUrl, clipboardUrl, initialThemeMode, digOptions, on
 
   const copyUrl = useCallback(() => {
     if (!current) return
-    const method = copyToClipboard(current.url)
-    notify(method === "none" ? "could not reach a clipboard" : "url copied")
+    // The signed form is the one that plays; the bare one 403s.
+    const method = copyToClipboard(current.signedUrl ?? current.url)
+    notify(method === "none" ? "could not reach a clipboard" : current.signedUrl ? "signed url copied" : "url copied")
   }, [current, notify])
 
   const copyCommand = useCallback(() => {
@@ -284,6 +285,11 @@ export function App({ initialUrl, clipboardUrl, initialThemeMode, digOptions, on
     <box
       style={{
         flexDirection: "column",
+        // Centred both ways: the column is centred horizontally, and
+        // `justifyContent` keeps it vertically centred so short screens (the
+        // ask prompt) sit in the middle rather than clinging to the top.
+        alignItems: "center",
+        justifyContent: "center",
         padding: 1,
         width: "100%",
         height: "100%",
@@ -615,6 +621,9 @@ function DetailScreen({
         ) : null}
         {candidate.keyUri ? (
           <Fact theme={theme} label="aes key" value={candidate.keyUri} width={contentWidth} />
+        ) : null}
+        {candidate.tokenEndpoint ? (
+          <Fact theme={theme} label="signer" value={candidate.tokenEndpoint} width={contentWidth} />
         ) : null}
         {candidate.status ? (
           <Fact theme={theme} label="http" value={`${candidate.status} · ${candidate.contentType ?? "?"}`} width={contentWidth} />

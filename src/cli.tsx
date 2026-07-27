@@ -143,7 +143,7 @@ function render(result: DigResult, format: string): string {
     case "urls":
       return result.candidates
         .filter((candidate) => candidate.verified !== false)
-        .map((candidate) => candidate.url)
+        .map((candidate) => candidate.signedUrl ?? candidate.url)
         .join("\n")
     default:
       return toText(result)

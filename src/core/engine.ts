@@ -26,7 +26,9 @@ import {
   isStreamBearingPath,
 } from "./extract.js"
 import { isDashManifest, isPlaylist } from "./hls.js"
-import { runInHoneypot } from "./sandbox.js"
+import { createHoneypot, type HoneypotSession } from "./sandbox.js"
+import { looksLikeApiResponse, rankApiBases, synthesizeEndpoints } from "./api.js"
+import { findTokenEndpoints } from "./token.js"
 import { initialConfidence, probeCandidate } from "./probe.js"
 import { discoverServers } from "./servers.js"
 import { detectPlatform, type PlatformEmbed } from "./platforms.js"
@@ -76,6 +78,7 @@ export class Oracle {
   private candidates = new Map<string, Candidate>()
   private servers: ServerVariant[] = []
   private platforms = new Map<string, PlatformEmbed>()
+  private tokenEndpoints = new Set<string>()
   private documents = 0
   private scripts = 0
   private aborted = false
@@ -175,10 +178,12 @@ export class Oracle {
 
     let body: string
     let finalUrl: string
+    let contentType: string
     try {
       const response = await this.http.get(task.url, { referer: task.referer, timeout: this.options.timeout })
       body = response.body
       finalUrl = response.finalUrl
+      contentType = response.contentType
       this.report({
         type: "fetched",
         url: task.url,
@@ -225,15 +230,36 @@ export class Oracle {
 
     const isHtml = /<\s*(?:html|head|body|div|script|iframe)\b/i.test(body.slice(0, 4000))
 
-    // --- layer 3: the honeypot ---------------------------------------------
-    if (this.options.sandbox) {
-      const code = isHtml ? collectInlineScripts(body) : body
-      if (code.trim().length > 24 && (needsExecution(code) || !isHtml || containsPlayerHints(code))) {
-        children.push(...this.runSandbox(code, finalUrl, task))
-      }
+    // A JSON body is an API response: follow the URLs inside it, because the
+    // manifest is regularly one more hop behind a config endpoint.
+    if (!isHtml && looksLikeApiResponse(body, contentType)) {
+      children.push(...this.followApiResponse(body, finalUrl, task))
     }
 
-    if (!isHtml) return { children, body }
+    // --- layer 3: the honeypot ---------------------------------------------
+    if (!isHtml) {
+      if (this.options.sandbox && body.trim().length > 24) {
+        children.push(...this.runScripts([{ code: body, name: finalUrl }], finalUrl, task))
+      }
+      return { children, body }
+    }
+
+    // One session for the whole page: inline scripts and external ones run in
+    // document order in a single global, which is the only way a bundled app
+    // (webpack, Nuxt, Vite) ever gets far enough to ask for its stream.
+    if (this.options.sandbox) {
+      const before = this.mediaCandidateCount()
+      const sources = await this.collectPageScripts(body, finalUrl)
+      if (sources.length) children.push(...this.runScripts(sources, finalUrl, task))
+
+      // Synthesis is a last resort, not a routine step: it costs a burst of
+      // requests, so it only fires for a page that gave up nothing playable —
+      // which is exactly the single-page-app case it exists for.
+      if (sources.length && this.mediaCandidateCount() === before) {
+        const bundleText = sources.map((source) => source.code).join("\n")
+        children.push(...this.synthesizeApiCalls(bundleText, body, finalUrl, task))
+      }
+    }
 
     // --- layer 4: follow the document graph --------------------------------
     for (const embedded of findEmbeddedDocuments(body, finalUrl)) {
@@ -258,29 +284,73 @@ export class Oracle {
       })
     }
 
-    for (const script of findScripts(body, finalUrl)) {
-      if (script.url) {
-        children.push({
-          url: script.url,
-          kind: "script",
-          depth: task.depth + 1,
-          referer: finalUrl,
-          server: task.server,
-          via: task.via,
-        })
-      }
-    }
-
     return { children, body }
   }
 
-  /** Runs code in the honeypot and turns its hits into candidates and tasks. */
-  private runSandbox(code: string, documentUrl: string, task: Task): Task[] {
-    const children: Task[] = []
-    const result = runInHoneypot(code, {
+  /**
+   * Every script belonging to a page, inline and external, in document order.
+   *
+   * External bodies are fetched here rather than queued as separate documents
+   * so they can be replayed into one shared context below. Order is preserved
+   * because a bundler's runtime chunk has to run before the chunks that
+   * register into it.
+   */
+  private async collectPageScripts(html: string, baseUrl: string): Promise<Array<{ code: string; name: string }>> {
+    const refs = findScripts(html, baseUrl)
+    const sources: Array<{ code: string; name: string }> = new Array(refs.length)
+
+    await mapLimit(
+      refs.map((ref, index) => ({ ref, index })),
+      this.options.concurrency,
+      async ({ ref, index }) => {
+        if (ref.code !== undefined) {
+          sources[index] = { code: ref.code, name: `${baseUrl}#inline${index}` }
+          return
+        }
+        if (!ref.url) return
+        const identity = key(ref.url)
+        if (this.visited.has(identity)) return
+        this.visited.add(identity)
+        try {
+          this.scripts++
+          const response = await this.http.get(ref.url, { referer: baseUrl, timeout: this.options.timeout })
+          if (response.ok && response.body) {
+            sources[index] = { code: response.body, name: ref.url }
+            // Bundles hide URLs in plain text too, not only at runtime.
+            this.harvestText(response.body, ref.url, baseUrl)
+          }
+        } catch {
+          /* a missing chunk is survivable; the rest still runs */
+        }
+      },
+    )
+
+    return sources.filter(Boolean)
+  }
+
+  /** Replays a page's scripts into one honeypot and reaps what falls out. */
+  private runScripts(
+    sources: Array<{ code: string; name: string }>,
+    documentUrl: string,
+    task: Task,
+  ): Task[] {
+    const session = createHoneypot({
       pageUrl: documentUrl,
-      timeout: Math.min(this.options.timeout, 5000),
+      timeout: Math.min(this.options.timeout, 6000),
     })
+
+    for (const source of sources) {
+      if (this.aborted) break
+      session.run(source.code, source.name)
+    }
+    session.drain()
+
+    return this.reapSession(session, documentUrl, task)
+  }
+
+  /** Runs code in the honeypot and turns its hits into candidates and tasks. */
+  private reapSession(result: HoneypotSession, documentUrl: string, task: Task): Task[] {
+    const children: Task[] = []
 
     if (result.hits.length) {
       this.report({
@@ -347,8 +417,98 @@ export class Oracle {
     return children
   }
 
+  /**
+   * Reconstructs the request the page's own app would have made.
+   *
+   * When a bundled player never boots far enough to call its backend, the
+   * backend can still be deduced: the bundle names its API origin, and the page
+   * URL carries the id. Combining the two is what a human does after one glance
+   * at the Network tab, and it reaches manifests that no amount of static
+   * reading ever will.
+   */
+  private synthesizeApiCalls(bundleText: string, html: string, documentUrl: string, task: Task): Task[] {
+    if (task.depth >= this.options.maxDepth) return []
+
+    // Origins mentioned anywhere in the page or its bundle.
+    const mentioned = [
+      ...harvestUrls(bundleText, { base: documentUrl, includeAll: true }),
+      ...harvestUrls(html, { base: documentUrl, includeAll: true }),
+    ]
+    const bases = rankApiBases(mentioned, documentUrl)
+    const endpoints = synthesizeEndpoints({ pageUrl: documentUrl, bases })
+    if (!endpoints.length) return []
+
+    this.report({
+      type: "layer",
+      url: documentUrl,
+      technique: "api",
+      detail: `${endpoints.length} endpoint guess${endpoints.length === 1 ? "" : "es"}`,
+    })
+
+    return endpoints.map((url) => ({
+      url,
+      kind: "api" as const,
+      depth: task.depth + 1,
+      referer: documentUrl,
+      server: task.server,
+      via: [...task.via, "api" as const],
+    }))
+  }
+
+  /**
+   * Walks a JSON response for more to chase.
+   *
+   * Config endpoints chain: `/api/events/{id}` hands back a stream URL, but it
+   * just as often hands back another endpoint. Media URLs become candidates;
+   * same-domain non-media URLs become one more hop.
+   */
+  private followApiResponse(body: string, documentUrl: string, task: Task): Task[] {
+    const children: Task[] = []
+    if (task.depth >= this.options.maxDepth) return children
+
+    for (const url of harvestUrls(body, { base: documentUrl, includeAll: true })) {
+      if (isMediaUrl(url)) continue // already harvested as a candidate
+      if (detectPlatform(url)) continue
+      if (!sameSite(url, documentUrl) && !sameSite(url, task.referer ?? documentUrl)) continue
+      children.push({
+        url,
+        kind: "api",
+        depth: task.depth + 1,
+        referer: documentUrl,
+        server: task.server,
+        via: [...task.via, "api"],
+      })
+      if (children.length >= 8) break
+    }
+    return children
+  }
+
+  /** Harvests a fetched script body without treating it as its own document. */
+  private harvestText(text: string, scriptUrl: string, pageUrl: string) {
+    const pseudoTask: Task = { url: scriptUrl, kind: "script", depth: 1, referer: pageUrl, via: [] }
+    this.harvest(text, scriptUrl, pseudoTask, [])
+    const deobfuscated = deobfuscate(text)
+    if (deobfuscated.techniques.length) {
+      this.harvest(deobfuscated.text, scriptUrl, pseudoTask, deobfuscated.techniques)
+    }
+  }
+
+  /** Records any signing service mentioned, for use when a manifest 403s. */
+  private noteTokenEndpoints(text: string, base: string) {
+    if (this.tokenEndpoints.size >= 8) return
+    const urls = harvestUrls(text, { base, includeAll: true })
+    for (const endpoint of findTokenEndpoints(urls, text)) {
+      if (this.tokenEndpoints.size >= 8) break
+      if (!this.tokenEndpoints.has(endpoint)) {
+        this.tokenEndpoints.add(endpoint)
+        this.report({ type: "layer", url: base, technique: "token-signed", detail: hostOf(endpoint) })
+      }
+    }
+  }
+
   /** Pulls candidates out of a blob of text. */
   private harvest(text: string, base: string, task: Task, extra: Technique[]) {
+    this.noteTokenEndpoints(text, base)
     for (const url of harvestUrls(text, { base })) {
       this.addCandidate(url, {
         origin: base,
@@ -487,6 +647,7 @@ export class Oracle {
       const outcome = await probeCandidate(this.http, candidate, {
         timeout: this.options.timeout,
         expandVariants: this.options.expandVariants,
+        tokenEndpoints: [...this.tokenEndpoints],
       })
       this.candidates.set(key(candidate.url), outcome.candidate)
       this.report({ type: "probed", candidate: outcome.candidate })
@@ -499,6 +660,22 @@ export class Oracle {
         this.report({ type: "candidate", candidate: extra })
       }
     })
+  }
+
+  /**
+   * Candidates you could actually hand to a player.
+   *
+   * `unknown` is a guess, and a `websocket` is usually a control channel — this
+   * player's `wss://manager…` is a peer-coordination socket, not the video. If
+   * either counted as success, the synthesis gate below would consider the page
+   * solved and never look for the manifest that is genuinely still missing.
+   */
+  private mediaCandidateCount(): number {
+    let total = 0
+    for (const candidate of this.candidates.values()) {
+      if (candidate.kind !== "unknown" && candidate.kind !== "websocket") total++
+    }
+    return total
   }
 
   private enoughFound(): boolean {
@@ -588,6 +765,20 @@ function collectInlineScripts(html: string): string {
   // Semicolons between blocks: a truncated expression must not swallow the
   // next script's first statement.
   return parts.join("\n;\n")
+}
+
+/** Same registrable domain — keeps API chasing from wandering off-site. */
+function sameSite(a: string, b: string): boolean {
+  const domain = (url: string) => {
+    try {
+      const parts = new URL(url).hostname.split(".")
+      return parts.length <= 2 ? parts.join(".") : parts.slice(-2).join(".")
+    } catch {
+      return ""
+    }
+  }
+  const left = domain(a)
+  return Boolean(left) && left === domain(b)
 }
 
 function containsPlayerHints(code: string): boolean {

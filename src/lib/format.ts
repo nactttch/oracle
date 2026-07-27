@@ -106,6 +106,7 @@ export function describeTechniques(candidate: Candidate): string {
     api: "xhr replay",
     "hls-variant": "master playlist",
     redirect: "redirect",
+    "token-signed": "token signing",
   }
   const seen = candidate.via.map((technique) => names[technique] ?? technique)
   return [...new Set(seen)].join(" → ") || "direct"

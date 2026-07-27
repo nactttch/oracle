@@ -7,14 +7,21 @@
  */
 
 export type StreamKind =
-  | "hls" // .m3u8
+  | "hls" // .m3u8 / .m3u
   | "dash" // .mpd
+  | "smooth" // IIS Smooth Streaming, /Manifest or .ism
+  | "hds" // Adobe HDS, .f4m
   | "mp4"
   | "webm"
+  | "mkv"
   | "flv"
   | "ts" // raw MPEG-TS
-  | "rtmp"
-  | "webrtc"
+  | "audio" // aac, mp3, m4a, ogg, opus
+  | "rtmp" // rtmp/rtmps
+  | "rtsp"
+  | "srt" // Secure Reliable Transport
+  | "webrtc" // whep/whip
+  | "websocket" // ws/wss media transport
   | "unknown"
 
 /** How a candidate came to light. Ranked roughly by how much we trust it. */
@@ -35,6 +42,7 @@ export type Technique =
   | "api" // returned by an XHR/fetch endpoint we replayed
   | "hls-variant" // pulled out of a master playlist
   | "redirect" // a Location header pointed at it
+  | "token-signed" // a signing service unlocked it
 
 export interface Candidate {
   /** Absolute, fully resolved. */
@@ -68,6 +76,10 @@ export interface Candidate {
   keyMethod?: string
   /** No #EXT-X-ENDLIST => live edge. */
   live?: boolean
+  /** Playable URL after a signing service signed it, when one was needed. */
+  signedUrl?: string
+  /** The service that signed it, so the user can re-sign when it expires. */
+  tokenEndpoint?: string
   durationSec?: number
   segmentCount?: number
   resolution?: string

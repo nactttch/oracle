@@ -27,7 +27,24 @@ describe("classify", () => {
 
   test("recognises manifests with no extension", () => {
     expect(classify("https://a.tld/hls/abc123")).toBe("hls")
-    expect(classify("https://a.tld/manifest?id=9")).toBe("dash")
+    expect(classify("https://a.tld/manifest.mpd?id=9")).toBe("dash")
+    // A bare `/manifest` is the IIS Smooth Streaming convention, not DASH.
+    expect(classify("https://a.tld/x.ism/Manifest")).toBe("smooth")
+    expect(classify("https://a.tld/v/8f21a?format=m3u8")).toBe("hls")
+  })
+
+  test("recognises the streaming protocols", () => {
+    expect(classify("rtsp://a.tld/live")).toBe("rtsp")
+    expect(classify("srt://a.tld:9000")).toBe("srt")
+    expect(classify("wss://a.tld/ws")).toBe("websocket")
+    expect(classify("https://a.tld/whep/room1")).toBe("webrtc")
+  })
+
+  test("recognises the container formats", () => {
+    expect(classify("https://a.tld/v.mkv")).toBe("mkv")
+    expect(classify("https://a.tld/v.f4m")).toBe("hds")
+    expect(classify("https://a.tld/a.aac")).toBe("audio")
+    expect(classify("https://a.tld/seg.m2ts")).toBe("ts")
   })
 
   test("does not claim ordinary pages", () => {

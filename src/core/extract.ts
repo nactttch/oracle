@@ -15,23 +15,40 @@ const KIND_BY_EXTENSION: Array<[RegExp, StreamKind]> = [
   [/\.m3u8(\?|#|$)/i, "hls"],
   [/\.m3u(\?|#|$)/i, "hls"],
   [/\.mpd(\?|#|$)/i, "dash"],
+  [/\.f4m(\?|#|$)/i, "hds"],
+  [/\.ism(?:[/\\]manifest)?(\?|#|$)/i, "smooth"],
   [/\.mp4(\?|#|$)/i, "mp4"],
+  [/\.m4v(\?|#|$)/i, "mp4"],
+  [/\.mov(\?|#|$)/i, "mp4"],
   [/\.webm(\?|#|$)/i, "webm"],
+  [/\.mkv(\?|#|$)/i, "mkv"],
   [/\.flv(\?|#|$)/i, "flv"],
   [/\.ts(\?|#|$)/i, "ts"],
+  [/\.m2ts(\?|#|$)/i, "ts"],
+  [/\.(?:aac|mp3|m4a|ogg|opus|flac|wav)(\?|#|$)/i, "audio"],
 ]
 
 export function classify(url: string): StreamKind {
+  // Protocol decides before anything else — an rtmp URL may carry no extension.
   if (/^rtmps?:/i.test(url)) return "rtmp"
-  if (/^wss?:/i.test(url)) return "webrtc"
+  if (/^rtsps?:/i.test(url)) return "rtsp"
+  if (/^srt:/i.test(url)) return "srt"
+  if (/^wss?:/i.test(url)) return "websocket"
+
   const withoutHash = url.split("#")[0]!
   for (const [pattern, kind] of KIND_BY_EXTENSION) {
     if (pattern.test(withoutHash)) return kind
   }
-  // Manifests hidden behind a query string or a path segment.
-  if (/[?&](?:type|format|ext)=m3u8/i.test(url) || /\/(?:master|index|playlist|chunks|live)\.m3u8/i.test(url)) return "hls"
-  if (/\/manifest(\.mpd)?(\?|$)/i.test(url)) return "dash"
-  if (/\/hls\//i.test(url) || /playlist\.m3u8/i.test(url)) return "hls"
+
+  // Manifests that carry no extension: signed CDN paths, API-shaped routes and
+  // packager conventions. These are the ones extension matching throws away.
+  if (/[?&](?:type|format|ext|mime)=(?:m3u8|hls|application%2F|application\/)/i.test(url)) return "hls"
+  if (/[?&](?:type|format|ext)=(?:mpd|dash)/i.test(url)) return "dash"
+  if (/\/manifest\.mpd(\?|$)/i.test(url) || /\/dash\//i.test(url)) return "dash"
+  if (/\/manifest(?:\(format=[^)]*\))?(\?|$)/i.test(url)) return "smooth"
+  if (/\/(?:master|index|playlist|chunklist|chunks|live|stream)(?:_[\w-]+)?\.m3u8?/i.test(url)) return "hls"
+  if (/\/hls\/|\/hls$|playlist\.m3u8/i.test(url)) return "hls"
+  if (/\/(?:whep|whip)(?:\/|$|\?)/i.test(url)) return "webrtc"
   return "unknown"
 }
 
@@ -71,7 +88,8 @@ const RTMP_URL = /rtmps?:\/\/[^\s"'`<>\\)\]}]{4,}/gi
  * Media paths that never appear as a full URL: `file: "/live/ch1/index.m3u8"`
  * or `source:'hls/stream.m3u8'`. Resolved against the document later.
  */
-const RELATIVE_MEDIA = /["'`]((?:\.{0,2}\/)?[\w\-./~%]+\.(?:m3u8|mpd|mp4|webm|flv)(?:\?[^"'`\s]*)?)["'`]/gi
+const RELATIVE_MEDIA =
+  /["'`]((?:\.{0,2}\/)?[\w\-./~%]+\.(?:m3u8|m3u|mpd|f4m|ism|mp4|m4v|mov|webm|mkv|flv|ts|aac|mp3|m4a)(?:\?[^"'`\s]*)?)["'`]/gi
 
 /**
  * Player config keys. Catches values that carry no extension at all, which is

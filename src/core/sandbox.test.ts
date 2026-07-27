@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { runInHoneypot } from "./sandbox.js"
+import { createHoneypot, runInHoneypot } from "./sandbox.js"
 
 const PAGE = "https://site.tld/embed/5"
 
@@ -119,5 +119,28 @@ describe("containment", () => {
       { pageUrl: PAGE },
     )
     expect(result.error).toBeUndefined()
+  })
+})
+
+describe("shared session", () => {
+  test("later scripts see what earlier ones registered", () => {
+    // The bundler case: a runtime chunk that later chunks push into. Run these
+    // in separate contexts and the second one registers into a global the
+    // first cannot see, so the app never boots.
+    const session = createHoneypot({ pageUrl: PAGE })
+    session.run(`window.__chunks = []; window.__push = function (f) { window.__chunks.push(f); };`, "runtime.js")
+    session.run(`window.__push(function () { jwplayer('v').setup({file: 'https://cdn.tld/bundled.m3u8'}); });`, "chunk.js")
+    session.run(`window.__chunks.forEach(function (f) { f(); });`, "boot.js")
+    session.drain()
+    expect(session.hits.map((hit) => hit.value)).toContain("https://cdn.tld/bundled.m3u8")
+  })
+
+  test("a chunk that throws does not stop the ones after it", () => {
+    const session = createHoneypot({ pageUrl: PAGE })
+    const bad = session.run(`throw new Error('boom');`, "bad.js")
+    session.run(`new Hls().loadSource('https://cdn.tld/after.m3u8');`, "good.js")
+    session.drain()
+    expect(bad.error).toContain("boom")
+    expect(session.hits.map((hit) => hit.value)).toContain("https://cdn.tld/after.m3u8")
   })
 })

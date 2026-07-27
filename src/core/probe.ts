@@ -8,6 +8,7 @@
  */
 
 import type { HttpClient } from "./http.js"
+import { signUrl } from "./token.js"
 import { isDashManifest, isPlaylist, parseDash, parsePlaylist } from "./hls.js"
 import type { Candidate } from "./types.js"
 
@@ -15,6 +16,8 @@ export interface ProbeOptions {
   timeout: number
   /** Follow master playlists down to their renditions. */
   expandVariants: boolean
+  /** Signing services discovered during the dig, tried on a 401/403. */
+  tokenEndpoints?: string[]
 }
 
 export interface ProbeOutcome {
@@ -53,6 +56,12 @@ export async function probeCandidate(
     result.bytes = Number(response.headers["content-length"]) || response.bytes
 
     if (!response.ok || response.status >= 400) {
+      // A 401/403 on a manifest usually means "unsigned", not "wrong URL".
+      // Ask a signing service and try once more before writing it off.
+      if ((response.status === 403 || response.status === 401) && options.tokenEndpoints?.length) {
+        const signed = await trySigning(http, candidate, options)
+        if (signed) return signed
+      }
       result.verified = false
       result.confidence = clamp(result.confidence - (response.status === 403 ? 25 : 40))
       result.note = `http ${response.status}`
@@ -129,6 +138,55 @@ export async function probeCandidate(
     result.confidence = clamp(result.confidence - 30)
     result.note = error instanceof Error ? shortError(error.message) : "request failed"
     return { candidate: result, discovered }
+  }
+}
+
+/**
+ * Signs a rejected manifest and re-probes it.
+ *
+ * On success the *signed* URL is what gets verified and reported, since that is
+ * what actually plays — but the original stays as `url`, because a signature is
+ * short-lived and the bare URL plus the endpoint is the reusable pair.
+ */
+async function trySigning(
+  http: HttpClient,
+  candidate: Candidate,
+  options: ProbeOptions,
+): Promise<ProbeOutcome | null> {
+  const signed = await signUrl(http, candidate.url, options.tokenEndpoints ?? [], {
+    referer: candidate.headers.referer,
+    timeout: options.timeout,
+    verify: async (url) => {
+      try {
+        const check = await http.get(url, {
+          referer: candidate.headers.referer,
+          timeout: options.timeout,
+          maxBytes: 512 * 1024,
+        })
+        return check.ok && (isPlaylist(check.body) || isDashManifest(check.body))
+      } catch {
+        return false
+      }
+    },
+  })
+  if (!signed) return null
+
+  // Re-probe the signed URL so the report carries real manifest facts.
+  const outcome = await probeCandidate(
+    http,
+    { ...candidate, url: signed.url, via: [...candidate.via, "token-signed"] },
+    { ...options, tokenEndpoints: [] },
+  )
+
+  return {
+    candidate: {
+      ...outcome.candidate,
+      url: candidate.url,
+      signedUrl: signed.url,
+      tokenEndpoint: signed.endpoint,
+      note: outcome.candidate.note ? `${outcome.candidate.note} · token-signed` : "token-signed",
+    },
+    discovered: outcome.discovered,
   }
 }
 

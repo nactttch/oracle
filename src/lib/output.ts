@@ -36,6 +36,8 @@ export function toJson(result: DigResult): string {
         encrypted: candidate.encrypted ?? false,
         keyUri: candidate.keyUri ?? null,
         keyMethod: candidate.keyMethod ?? null,
+        signedUrl: candidate.signedUrl ?? null,
+        tokenEndpoint: candidate.tokenEndpoint ?? null,
         status: candidate.status ?? null,
         contentType: candidate.contentType ?? null,
         note: candidate.note ?? null,
@@ -62,7 +64,7 @@ export function toM3u(result: DigResult): string {
       // Recognised by VLC and mpv; ignored harmlessly elsewhere.
       lines.push(`#EXTVLCOPT:http-referrer=${candidate.headers.referer}`)
     }
-    lines.push(candidate.url, "")
+    lines.push(candidate.signedUrl ?? candidate.url, "")
   }
   return lines.join("\n")
 }
@@ -70,11 +72,13 @@ export function toM3u(result: DigResult): string {
 /** Ready-to-run commands, with the headers the host demands. */
 export function toCommands(candidate: Candidate, userAgent: string): Array<{ tool: string; command: string }> {
   const referer = candidate.headers.referer
+  // A signed URL is the one that actually plays; the bare one 403s.
+  const playable = candidate.signedUrl ?? candidate.url
   const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
 
   const mpv = [
     "mpv",
-    quote(candidate.url),
+    quote(playable),
     `--user-agent=${quote(userAgent)}`,
     referer ? `--http-header-fields=${quote(`Referer: ${referer}`)}` : "",
   ]
@@ -85,14 +89,14 @@ export function toCommands(candidate: Candidate, userAgent: string): Array<{ too
     "ffmpeg",
     `-user_agent ${quote(userAgent)}`,
     referer ? `-headers ${quote(`Referer: ${referer}\r\n`)}` : "",
-    `-i ${quote(candidate.url)}`,
+    `-i ${quote(playable)}`,
     "-c copy",
     quote(suggestFilename(candidate)),
   ]
     .filter(Boolean)
     .join(" ")
 
-  const vlc = ["vlc", quote(candidate.url), referer ? `--http-referrer=${quote(referer)}` : ""]
+  const vlc = ["vlc", quote(playable), referer ? `--http-referrer=${quote(referer)}` : ""]
     .filter(Boolean)
     .join(" ")
 
@@ -101,7 +105,7 @@ export function toCommands(candidate: Candidate, userAgent: string): Array<{ too
     "-L",
     `-A ${quote(userAgent)}`,
     referer ? `-e ${quote(referer)}` : "",
-    quote(candidate.url),
+    quote(playable),
     "-o",
     quote(suggestFilename(candidate)),
   ]
@@ -165,6 +169,8 @@ export function toText(result: DigResult): string {
       .join(" · ")
     lines.push(`       ${details}`)
     lines.push(`       via ${describeTechniques(candidate)}`)
+    if (candidate.signedUrl) lines.push(`       play  ${candidate.signedUrl}`)
+    if (candidate.tokenEndpoint) lines.push(`       token ${candidate.tokenEndpoint}`)
     if (candidate.headers.referer) lines.push(`       referer ${candidate.headers.referer}`)
   }
   return lines.join("\n")
