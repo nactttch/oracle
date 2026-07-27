@@ -7,3 +7,5 @@ dist/
 oracle-streams.json
 oracle-streams.m3u
 bun.lockb
+
+.claude/settings.local.json
