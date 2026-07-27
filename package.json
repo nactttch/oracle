@@ -1,0 +1,50 @@
+{
+  "name": "oracle-stream",
+  "version": "0.1.0",
+  "description": "dig any iframe. surface the raw stream. a terminal tool that unpacks, deobfuscates and sandbox-executes player embeds until the real m3u8/mpd falls out — and finds the sibling servers too.",
+  "type": "module",
+  "bin": {
+    "oracle": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.tsx",
+    "build": "bun build src/cli.tsx --outfile dist/cli.js --target bun --external '@opentui/*' --external react --banner '#!/usr/bin/env bun' && chmod +x dist/cli.js",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun test && bun run typecheck && bun run build"
+  },
+  "keywords": [
+    "m3u8",
+    "hls",
+    "dash",
+    "stream",
+    "iframe",
+    "scraper",
+    "deobfuscate",
+    "extractor",
+    "tui",
+    "opentui",
+    "cli",
+    "terminal",
+    "video"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@opentui/core": "^0.4.5",
+    "@opentui/react": "^0.4.5",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "@types/react": "^19.2.0",
+    "typescript": "^5.7.0"
+  }
+}

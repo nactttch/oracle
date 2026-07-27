@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.*
+oracle-streams.json
+oracle-streams.m3u
+bun.lockb
