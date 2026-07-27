@@ -183,9 +183,20 @@ export function isStreamBearingPath(path: string): boolean {
  * Trims the junk that regex boundaries leave behind: escaped slashes from JSON,
  * HTML entities, and trailing punctuation that belonged to the surrounding code.
  */
+/**
+ * MIME types masquerading as relative paths.
+ *
+ * `type: "application/vnd.apple.mpegurl"` sits next to a `file:` key in every
+ * HLS config on earth, and resolving it against the script's directory yields a
+ * confident-looking `https://cdn/player/v/8.21.1/application/vnd.apple.mpegurl`
+ * that has never existed.
+ */
+const MIME_TYPE = /^(?:application|audio|video|text|image|font|model|multipart|message)\/[\w.+-]+$/i
+
 export function cleanUrl(raw: string): string | null {
   let url = raw.trim()
   if (!url) return null
+  if (MIME_TYPE.test(url)) return null
 
   url = url.replace(/\\\//g, "/").replace(/\\u002[fF]/g, "/").replace(/\\&/g, "&")
   url = url

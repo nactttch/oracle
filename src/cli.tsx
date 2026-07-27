@@ -66,7 +66,29 @@ const HELP = `
   you point it at, and the rights of whoever owns the stream.
 `
 
+/**
+ * Oracle runs untrusted code on purpose, so a rejected promise is not a bug
+ * report — it is the site misbehaving.
+ *
+ * Player scripts routinely do `fetch(u).then(r => r.json())` and never attach a
+ * `.catch`. Inside the honeypot that rejection escapes the VM and arrives here
+ * as a process-level `unhandledRejection`; left fatal, one careless third-party
+ * script kills a dig that had already found the stream. Note these cannot be
+ * caught by `instanceof Error` — they cross a realm boundary, so their
+ * prototype is the sandbox's, not ours.
+ *
+ * `uncaughtException` stays fatal: that is our own code failing.
+ */
+function ignoreSandboxRejections() {
+  process.on("unhandledRejection", (reason: unknown) => {
+    if (process.env.ORACLE_DEBUG) {
+      process.stderr.write(`oracle: ignored rejection from page code — ${String(reason)}\n`)
+    }
+  })
+}
+
 async function main() {
+  ignoreSandboxRejections()
   const args = parseArgs(process.argv.slice(2))
 
   if (args.error) {
@@ -176,14 +198,13 @@ async function runInteractive(args: ParsedArgs, digOptions: Partial<DigOptions>)
   }
 
   // A crash must not leave the terminal in the alternate screen with the
-  // cursor hidden — restore first, then let the error print.
-  for (const event of ["uncaughtException", "unhandledRejection"] as const) {
-    process.on(event, (error: unknown) => {
-      finish()
-      process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`)
-      process.exit(1)
-    })
-  }
+  // cursor hidden — restore first, then let the error print. Rejections are
+  // deliberately absent here; see ignoreSandboxRejections.
+  process.on("uncaughtException", (error: unknown) => {
+    finish()
+    process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`)
+    process.exit(1)
+  })
 
   createRoot(renderer).render(
     <App

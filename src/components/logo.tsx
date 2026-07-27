@@ -99,7 +99,11 @@ export function Logo({ theme, animated = true }: { theme: Theme; animated?: bool
   }, [phase, animated])
 
   return (
-    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+    // Explicit height: the glyph rows contain half-blocks and spaces, and
+    // without a fixed height yoga measures the box short, letting whatever
+    // follows overlap the last row — the tagline was being drawn straight
+    // through the bottom of the wordmark.
+    <box style={{ flexDirection: "column", flexShrink: 0, height: ROWS }}>
       {GRID.map((row, rowIndex) => (
         <text key={rowIndex}>
           {/* Runs of same-coloured cells are merged so a row is a handful of

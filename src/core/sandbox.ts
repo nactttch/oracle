@@ -52,6 +52,13 @@ export interface SandboxOptions {
 /** Strings shorter than this are never URLs and just add noise. */
 const MIN_INTERESTING = 4
 
+/** Player libraries worth instrumenting if a page loads the genuine article. */
+const PLAYER_GLOBALS = new Set([
+  "jwplayer", "videojs", "Clappr", "Hls", "hls", "dashjs", "flvjs", "Playerjs",
+  "playerjs", "fluidPlayer", "DPlayer", "Plyr", "shaka", "THEOplayer",
+  "MediaSource", "jQuery", "$",
+])
+
 /** Runtime globals a browser does not have, and the sandbox must not invent. */
 const HOST_GLOBALS = new Set([
   "process",
@@ -146,7 +153,22 @@ export function createHoneypot(options: SandboxOptions): HoneypotSession {
   const handler: ProxyHandler<Record<string, unknown>> = {
     has: () => true, // no ReferenceError, ever
     set(target, prop, value) {
-      target[prop as string] = value
+      const name = String(prop)
+      // A page that loads the genuine player library replaces our ghost with
+      // the real thing, and the real thing keeps the config to itself. Catch
+      // the assignment and instrument it on the way past.
+      if (PLAYER_GLOBALS.has(name) && (typeof value === "function" || (value && typeof value === "object"))) {
+        const wrap = target.__oracle_wrap_real__ as ((value: unknown, name: string) => unknown) | undefined
+        if (wrap) {
+          try {
+            target[name] = wrap(value, name)
+            return true
+          } catch {
+            /* fall through to a plain assignment */
+          }
+        }
+      }
+      target[name] = value
       return true
     },
     deleteProperty(target, prop) {
@@ -311,6 +333,57 @@ const BOOTSTRAP = String.raw`
   }
   globalThis.__oracle_ghost__ = ghost;
 
+  /**
+   * Wraps a *real* object so its calls are recorded and still forwarded.
+   *
+   * Ghosts only help for libraries that were never loaded. When a page pulls in
+   * the genuine jwplayer.js and then calls jwplayer('p').setup({file: ...}),
+   * the real library receives the config and does DOM work — swallowing the one
+   * value we came for. This records the arguments on the way in, then forwards.
+   * If the real implementation throws (it usually does, there being no DOM), we
+   * hand back a ghost so the rest of the chain keeps running.
+   */
+  function wrapReal(target, path, depth) {
+    if (target == null || depth > 3) return target;
+    var kind = typeof target;
+    if (kind !== "function" && kind !== "object") return target;
+    if (target.__ghost__ || target.__wrapped__) return target;
+    try {
+      return new Proxy(target, {
+        get: function (obj, prop) {
+          if (prop === "__wrapped__") return true;
+          var value;
+          try { value = obj[prop]; } catch (e) { return undefined; }
+          if (typeof value === "function") {
+            return function () {
+              var args = Array.prototype.slice.call(arguments);
+              record(args, path + "." + String(prop) + "()");
+              try {
+                return wrapReal(value.apply(obj, args), path + "." + String(prop) + "()", depth + 1);
+              } catch (e) {
+                return ghost(path + "." + String(prop) + "()");
+              }
+            };
+          }
+          return value;
+        },
+        apply: function (obj, self, args) {
+          record(args, path + "()");
+          try { return wrapReal(obj.apply(self, args), path + "()", depth + 1); }
+          catch (e) { return ghost(path + "()"); }
+        },
+        construct: function (obj, args) {
+          record(args, "new " + path + "()");
+          try { return wrapReal(Reflect.construct(obj, args), "new " + path, depth + 1); }
+          catch (e) { return ghost("new " + path); }
+        },
+      });
+    } catch (e) {
+      return target;
+    }
+  }
+  globalThis.__oracle_wrap_real__ = function (value, name) { return wrapReal(value, name, 0); };
+
   // One ghost per unknown global name, so identity comparisons hold across
   // reads: scripts do stash a global and compare it to itself later.
   var globalGhosts = {};
@@ -434,16 +507,24 @@ const BOOTSTRAP = String.raw`
     var url = (input && input.url) || input;
     record(url, "fetch()", "fetch");
     if (init) record(init, "fetch.init");
-    var body = { ok: true, status: 200, headers: { get: function () { return null; } },
-      text: function () { return Promise.resolve(""); },
+    // "{}" rather than "": page code routinely does
+    // fetch(u).then(r => r.text()).then(JSON.parse), and an empty body makes
+    // that throw inside a promise nobody catches. The rejection then escapes
+    // the VM as a host-level unhandledRejection and takes the whole dig down.
+    var body = { ok: true, status: 200, url: String(url || ""), redirected: false,
+      statusText: "OK", type: "basic", bodyUsed: false,
+      headers: { get: function () { return null; }, has: function () { return false; },
+                 forEach: function () {} },
+      text: function () { return Promise.resolve("{}"); },
       json: function () { return Promise.resolve({}); },
+      blob: function () { return Promise.resolve({ size: 0 }); },
       arrayBuffer: function () { return Promise.resolve(new ArrayBuffer(0)); },
       clone: function () { return body; } };
     return Promise.resolve(body);
   };
 
   function FakeXhr() {
-    this.readyState = 0; this.status = 200; this.responseText = ""; this.response = "";
+    this.readyState = 0; this.status = 200; this.responseText = "{}"; this.response = "{}";
     this.responseURL = ""; this.upload = {}; this.withCredentials = false;
   }
   FakeXhr.prototype.open = function (method, url) { record(url, "XMLHttpRequest.open", "xhr"); this._url = url; this.readyState = 1; };
@@ -456,6 +537,7 @@ const BOOTSTRAP = String.raw`
   FakeXhr.prototype.send = function (body) {
     if (body) record(body, "XMLHttpRequest.send");
     this.readyState = 4; this.status = 200; this.responseURL = this._url || "";
+    this.responseText = "{}"; this.response = "{}";
     try { if (this.onreadystatechange) this.onreadystatechange(); } catch (e) {}
     try { if (this.onload) this.onload(); } catch (e) {}
   };
@@ -480,6 +562,25 @@ const BOOTSTRAP = String.raw`
     for (var round = 0; round < 3 && queue.length; round++) {
       var batch = queue.splice(0, 200);
       for (var i = 0; i < batch.length; i++) { try { batch[i].fn(); } catch (e) {} }
+    }
+  };
+
+  // --- JSON.parse never throws in here -------------------------------------
+  //
+  // The honeypot's whole premise is that nothing stops a script mid-flight.
+  // JSON.parse was the one hole left: page code does
+  //   fetch(u).then(function (r) { return r.text(); }).then(JSON.parse)
+  // with no .catch, so a body this sandbox cannot supply becomes a rejected
+  // promise that escapes the VM entirely and surfaces as a host-level
+  // unhandledRejection. Returning an empty object keeps the script running,
+  // which is the only thing we want from it.
+  // (No backticks in this block: it lives inside a String.raw template.)
+  var realParse = JSON.parse;
+  JSON.parse = function (text, reviver) {
+    try {
+      return realParse(text, reviver);
+    } catch (e) {
+      return {};
     }
   };
 

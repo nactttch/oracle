@@ -148,3 +148,21 @@ describe("sandbox paths", () => {
     expect(isStreamBearingPath("document.body.style")).toBe(false)
   })
 })
+
+describe("mime types are not urls", () => {
+  test("a content type next to a file key is rejected", () => {
+    expect(cleanUrl("application/vnd.apple.mpegurl")).toBeNull()
+    expect(cleanUrl("video/mp4")).toBeNull()
+  })
+
+  test("a real path that merely looks similar survives", () => {
+    expect(cleanUrl("/application/live.m3u8")).toBe("/application/live.m3u8")
+  })
+
+  test("harvesting skips the type key but keeps the file key", () => {
+    const text = `jwplayer("v").setup({file: "/live/x.m3u8", type: "application/vnd.apple.mpegurl"});`
+    const found = harvestConfigUrls(text, BASE)
+    expect(found).toContain("https://site.tld/live/x.m3u8")
+    expect(found.some((url) => url.includes("vnd.apple"))).toBe(false)
+  })
+})

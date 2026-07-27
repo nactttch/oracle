@@ -297,6 +297,7 @@ export function App({ initialUrl, clipboardUrl, initialThemeMode, digOptions, on
       }}
     >
       <Logo theme={theme} animated={Boolean(process.stdout.isTTY)} />
+      <Gap />
       <text>
         <span fg={theme.dim}>{TAGLINE}</span>
       </text>
@@ -539,9 +540,14 @@ function ResultsScreen({
           // Renditions of one stream share a host and a filename, so the URL
           // alone renders six identical-looking rows. Lead with what actually
           // differs between them.
-          const quality = candidate.resolution
-            ? `${candidate.resolution.split("x")[1] ?? candidate.resolution}p`
-            : candidate.kind.toUpperCase()
+          // Truncated to 5 so the padEnd(6) below always leaves a gap — a
+          // 7-character label like "UNKNOWN" ran straight into the host.
+          const quality = truncate(
+            candidate.resolution
+              ? `${candidate.resolution.split("x")[1] ?? candidate.resolution}p`
+              : candidate.kind.toUpperCase(),
+            5,
+          )
           const room = contentWidth - 6 - (label ? label.length + 3 : 0) - 8
           return (
             <text key={candidate.url}>
