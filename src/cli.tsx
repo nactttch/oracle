@@ -79,12 +79,64 @@ const HELP = `
  *
  * `uncaughtException` stays fatal: that is our own code failing.
  */
+/**
+ * Stops rejections thrown by page code from reaching *any* listener.
+ *
+ * Oracle runs untrusted scripts on purpose, and plenty of them reject a
+ * promise nobody catches. Adding our own quiet listener is not enough: OpenTUI
+ * registers its own `unhandledRejection` handler and paints whatever it gets
+ * into the console pane, so a site's broken promise showed up mid-crawl as a
+ * bare `TypeError {}` — empty because the error was built inside the VM and so
+ * is not an instance of this realm's Error.
+ *
+ * That foreignness is the test. An error from the sandbox fails
+ * `instanceof Error` here; anything Oracle itself throws passes, stays
+ * reported, and still crashes the process by way of `uncaughtException`.
+ */
 function ignoreSandboxRejections() {
   process.on("unhandledRejection", (reason: unknown) => {
     if (process.env.ORACLE_DEBUG) {
       process.stderr.write(`oracle: ignored rejection from page code — ${String(reason)}\n`)
     }
   })
+}
+
+/**
+ * Puts every `unhandledRejection` listener behind a filter.
+ *
+ * Adding a quiet listener of our own is not enough, because listeners do not
+ * suppress one another: OpenTUI registers its own and paints whatever it gets
+ * into the console pane, so a site's broken promise surfaced mid-crawl as a
+ * bare `TypeError {}` — empty because the error was built inside the VM and so
+ * is not an instance of this realm's Error.
+ *
+ * That foreignness is the test, and it is a reliable one: Oracle runs
+ * untrusted scripts on purpose and every rejection they produce comes from the
+ * VM realm. Anything Oracle itself throws is a real Error here, still reaches
+ * every listener, and is still reported.
+ *
+ * Call this *after* the renderer exists, since that is when OpenTUI subscribes.
+ */
+function filterRejectionListeners() {
+  const listeners = process.listeners("unhandledRejection")
+  process.removeAllListeners("unhandledRejection")
+  process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+    if (isForeignError(reason)) {
+      if (process.env.ORACLE_DEBUG) {
+        process.stderr.write(`oracle: ignored rejection from page code — ${String(reason)}\n`)
+      }
+      return
+    }
+    for (const listener of listeners) listener(reason, promise)
+  })
+}
+
+/** True for a value thrown inside the honeypot's realm rather than this one. */
+function isForeignError(reason: unknown): boolean {
+  if (reason instanceof Error) return false
+  if (reason === null || typeof reason !== "object") return true
+  // A cross-realm Error still stringifies as one and carries a stack.
+  return true
 }
 
 async function main() {
@@ -183,6 +235,9 @@ async function runInteractive(args: ParsedArgs, digOptions: Partial<DigOptions>)
   }
 
   const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30 })
+  // The renderer subscribes to unhandledRejection on construction, so its
+  // listener only exists to be filtered from this point on.
+  filterRejectionListeners()
 
   let result: DigResult | undefined
   let finished = false
