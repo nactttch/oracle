@@ -575,6 +575,15 @@ function ResultsScreen({
               <span fg={theme.ok}>{line}</span>
             </text>
           ))}
+          {/* The Referer belongs beside the URL, not three panels down: most
+              CDNs 403 without it, so a URL copied on its own simply fails. */}
+          {current.headers.referer
+            ? wrap(`referer: ${current.headers.referer}`, contentWidth).map((line, index) => (
+                <text key={`ref${index}`}>
+                  <span fg={theme.dim}>{line}</span>
+                </text>
+              ))
+            : null}
         </Panel>
       ) : null}
 
