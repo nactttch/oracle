@@ -80,12 +80,45 @@ const JUNK = new RegExp(
     // /xjs/_/js/ into the crawl — hundreds of requests, never a stream.
     "gstatic\\.com|/xjs/_/|google\\.com/(?:async|search|url|recaptcha)",
     "bing\\.com/|duckduckgo\\.com/|yandex\\.(?:ru|com)/",
+    // Code that ships with the site rather than content it serves. A CMS
+    // plugin bundles its own media — a quiz's sound-start.mp3, a player skin's
+    // preview clip — and those are real audio files, so nothing downstream
+    // rejects them. Uploads are excluded from this: that is where a WordPress
+    // site keeps the video it actually published.
+    "/wp-content/(?:plugins|themes|mu-plugins)/|/wp-includes/",
+    "/(?:sites/all|sites/default)/(?:modules|themes)/|/typo3conf/ext/",
+    "/node_modules/|/vendor/|/bower_components/",
   ].join("|"),
   "i",
 )
 
+/**
+ * Interface sound effects. These are genuine audio files sitting in an assets
+ * directory, so format alone never rules them out — a click, a countdown beep,
+ * a correct-answer chime. No stream is named this.
+ */
+const UI_SOUND = new RegExp(
+  [
+    "/(?:sounds?|sfx|audio|assets|static|media)/[^?#]*",
+    "(?:sound|click|beep|blip|pop|tick|tock|chime|ding|alert|notify|error|",
+    "success|correct|wrong|win|lose|start|end|finish|intro|outro|hover|",
+    "swipe|whoosh|applause|buzzer|countdown|timer|coin|level-?up)",
+    "[\\w-]*\\.(?:mp3|wav|ogg|m4a|aac|opus|flac)(?:\\?|#|$)",
+  ].join(""),
+  "i",
+)
+
+/** The same names, wherever they sit — `/audio/sound-start.mp3` or `/x/beep.mp3`. */
+const UI_SOUND_BARE = new RegExp(
+  [
+    "/(?:sound|click|beep|blip|pop|tick|chime|ding|alert|notify|buzzer|",
+    "countdown|whoosh|applause)[\\w-]*\\.(?:mp3|wav|ogg|m4a|aac|opus)(?:\\?|#|$)",
+  ].join(""),
+  "i",
+)
+
 export function isJunk(url: string): boolean {
-  return JUNK.test(url)
+  return JUNK.test(url) || UI_SOUND.test(url) || UI_SOUND_BARE.test(url)
 }
 
 // ---------------------------------------------------------------------------

@@ -188,3 +188,29 @@ describe("player chrome is not the stream", () => {
     expect(isJunk("https://cdn.tld/live/index.m3u8")).toBe(false)
   })
 })
+
+describe("bundled assets are not the stream", () => {
+  test("a plugin's interface sound is rejected", () => {
+    // Real audio in an assets directory, so format alone never rules it out.
+    // This one ranked first on a page where nothing else was found.
+    expect(
+      isJunk("https://tlfaz.com/wp-content/plugins/beeteam368-extensions-pro/inc/video-quizzes/assets/sound-start.mp3"),
+    ).toBe(true)
+    expect(isJunk("https://a.tld/assets/click.mp3")).toBe(true)
+    expect(isJunk("https://a.tld/sounds/correct-answer.mp3")).toBe(true)
+    expect(isJunk("https://a.tld/audio/beep.wav")).toBe(true)
+  })
+
+  test("code that ships with the site is rejected, uploads are not", () => {
+    expect(isJunk("https://a.tld/wp-content/plugins/x/skin/preview.mp4")).toBe(true)
+    expect(isJunk("https://a.tld/node_modules/hls.js/demo.mp4")).toBe(true)
+    // Where a WordPress site keeps the video it actually published.
+    expect(isJunk("https://a.tld/wp-content/uploads/2025/03/episode-1.mp4")).toBe(false)
+  })
+
+  test("real media that merely looks similar survives", () => {
+    expect(isJunk("https://a.tld/media/podcast-episode-12.mp3")).toBe(false)
+    expect(isJunk("https://a.tld/audio/track-128k.m3u8")).toBe(false)
+    expect(isJunk("https://a.tld/live/index.m3u8")).toBe(false)
+  })
+})
