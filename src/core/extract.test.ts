@@ -214,3 +214,27 @@ describe("bundled assets are not the stream", () => {
     expect(isJunk("https://a.tld/live/index.m3u8")).toBe(false)
   })
 })
+
+describe("markup that arrived as a json string", () => {
+  test("an escaped iframe is still an iframe", () => {
+    // A CMS that renders the player through an AJAX payload ships the embed
+    // with every quote escaped. A matcher looking for src=" walks straight
+    // past the one iframe on the page that matters.
+    const html = String.raw`{"content":"<iframe src=\"https:\/\/host.tld\/player\/\" width=\"640\"><\/iframe>"}`
+    const urls = findEmbeddedDocuments(html, BASE).map((doc) => doc.url)
+    expect(urls).toContain("https://host.tld/player/")
+  })
+
+  test("unicode-escaped markup counts too", () => {
+    const html = String.raw`var cfg = "<iframe src="https://host.tld/embed/">";`
+    const urls = findEmbeddedDocuments(html, BASE).map((doc) => doc.url)
+    expect(urls).toContain("https://host.tld/embed/")
+  })
+
+  test("ordinary markup is unaffected", () => {
+    const html = `<iframe src="/plain/player/"></iframe>`
+    expect(findEmbeddedDocuments(html, BASE).map((doc) => doc.url)).toEqual([
+      "https://site.tld/plain/player/",
+    ])
+  })
+})

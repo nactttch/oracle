@@ -326,9 +326,30 @@ const META_REFRESH = /<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi
 const OG_VIDEO = /<meta[^>]+(?:property|name)\s*=\s*["'](?:og:video(?::url|:secure_url)?|twitter:player)["'][^>]*>/gi
 
 /** iframes, embeds, `<source>`s, meta-refresh hops and og:video targets. */
-export function findEmbeddedDocuments(html: string, base: string): EmbeddedDocument[] {
+/** Undoes one layer of JSON string escaping, leaving the markup intact. */
+function unescapeJsonMarkup(text: string): string {
+  return text
+    .replace(/\\u0022/gi, '"')
+    .replace(/\\u0027/gi, "'")
+    .replace(/\\u003c/gi, "<")
+    .replace(/\\u003e/gi, ">")
+    .replace(/\\u002f/gi, "/")
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\\//g, "/")
+}
+
+export function findEmbeddedDocuments(rawHtml: string, base: string): EmbeddedDocument[] {
   const results: EmbeddedDocument[] = []
   const seen = new Set<string>()
+
+  // Markup that arrived as a JSON string is still markup. A CMS that renders
+  // the player through an AJAX payload or an inline config blob ships the
+  // embed as   <iframe src=\"https:\/\/host\/player\">   — every quote
+  // escaped, so a matcher looking for src=" walks straight past the one
+  // iframe on the page that matters. Scanning an unescaped copy alongside the
+  // original costs one pass and finds it.
+  const html = /\\["'/]/.test(rawHtml) ? rawHtml + "\n" + unescapeJsonMarkup(rawHtml) : rawHtml
 
   const add = (raw: string | undefined | null, reason: EmbeddedDocument["reason"]) => {
     if (!raw) return
