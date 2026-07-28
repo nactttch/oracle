@@ -144,3 +144,58 @@ describe("shared session", () => {
     expect(session.hits.map((hit) => hit.value)).toContain("https://cdn.tld/after.m3u8")
   })
 })
+
+describe("deferred callbacks", () => {
+  test("a callback handed to an unknown api still runs", () => {
+    // The honeypot's own document fires listeners immediately, so the value is
+    // only at risk when the page has moved to some *other* object first. An
+    // anti-adblock script that rebuilds the document inside an iframe leaves
+    // the real player registering on a ghost, and a ghost that only records
+    // its arguments drops the callback — taking the stream with it.
+    const session = createHoneypot({ pageUrl: PAGE })
+    session.run(
+      `SomeLoader.whenReady(function () { jwplayer('v').setup({file: 'https://cdn.tld/deferred.m3u8'}); });`,
+      "player.js",
+    )
+    session.drain()
+    expect(session.hits.map((hit) => hit.value)).toContain("https://cdn.tld/deferred.m3u8")
+  })
+
+  test("it finds the callback through apply and through an options object", () => {
+    const session = createHoneypot({ pageUrl: PAGE })
+    session.run(
+      `document.createElement('iframe').contentWindow.document.addEventListener.apply(null,
+         ['DOMContentLoaded', function () { new Hls().loadSource('https://cdn.tld/applied.m3u8'); }]);`,
+      "applied.js",
+    )
+    session.run(
+      `Api.request({url: '/x', success: function () { new Hls().loadSource('https://cdn.tld/optioned.m3u8'); }});`,
+      "optioned.js",
+    )
+    session.drain()
+    const values = session.hits.map((hit) => hit.value)
+    expect(values).toContain("https://cdn.tld/applied.m3u8")
+    expect(values).toContain("https://cdn.tld/optioned.m3u8")
+  })
+
+  test("an onload assignment is a registration too", () => {
+    const session = createHoneypot({ pageUrl: PAGE })
+    session.run(
+      `var s = SomeThing.make(); s.onload = function () { new Hls().loadSource('https://cdn.tld/onload.m3u8'); };`,
+      "onload.js",
+    )
+    session.drain()
+    expect(session.hits.map((hit) => hit.value)).toContain("https://cdn.tld/onload.m3u8")
+  })
+
+  test("a handler that throws does not stop the others", () => {
+    const session = createHoneypot({ pageUrl: PAGE })
+    session.run(
+      `Loader.on('a', function () { throw new Error('boom'); });
+       Loader.on('b', function () { new Hls().loadSource('https://cdn.tld/survivor.m3u8'); });`,
+      "mixed.js",
+    )
+    session.drain()
+    expect(session.hits.map((hit) => hit.value)).toContain("https://cdn.tld/survivor.m3u8")
+  })
+})

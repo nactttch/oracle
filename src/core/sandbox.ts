@@ -291,6 +291,52 @@ const BOOTSTRAP = String.raw`
   function record(value, path, network) { scan(value, path, network, 0, []); }
   globalThis.__oracle_scan__ = record;
 
+  // --- deferred callbacks ---------------------------------------------------
+  //
+  // A callback handed to an unknown API is the single most common way a page
+  // postpones the work we came for. The obvious case is an event listener, but
+  // it is also jQuery's ready(fn), a player's on("ready", fn), a loader's
+  // then(fn), and every hand-rolled "call me when the DOM settles" wrapper.
+  //
+  // The honeypot's own document and window fire their listeners immediately,
+  // which covers the common shape. It does not cover the case where the page
+  // has moved to a *different* document first: an anti-adblock script that
+  // builds an iframe and works against its contentWindow leaves the real
+  // player registering on a ghost, and a ghost that merely records its
+  // arguments drops the callback on the floor. That is not a rare shape — the
+  // scripts most likely to do it are exactly the ones bundled alongside a
+  // stream — so ghosts queue callables and drain() runs them.
+  var deferred = [];
+  function defer(fn, label) {
+    if (typeof fn !== "function") return;
+    if (deferred.length >= 600) return;
+    deferred.push({ fn: fn, label: label });
+  }
+  // Callbacks are invoked with an event-shaped ghost. Handlers that take no
+  // argument ignore it; handlers that read e.data or e.target get something
+  // that answers rather than throwing.
+  //
+  // The search descends into arrays and option objects rather than looking
+  // only at the top level, because the callback is very often not a direct
+  // argument: fn.apply(el, [type, handler]) buries it one array deep, and
+  // {success: handler} / {onReady: handler} bury it one object deep. Both
+  // shapes are ordinary enough that stopping at depth zero misses most of
+  // what a page actually defers.
+  function deferCallables(value, label, depth, seen) {
+    if (value == null || depth > 3) return;
+    if (typeof value === "function") { defer(value, label); return; }
+    if (typeof value !== "object") return;
+    if (value.__ghost__ || seen.indexOf(value) !== -1) return;
+    seen.push(value);
+    try {
+      var keys = Object.keys(value);
+      for (var i = 0; i < keys.length && i < 60; i++) {
+        deferCallables(value[keys[i]], label + "." + keys[i], depth + 1, seen);
+      }
+    } catch (e) { /* exotic object — nothing to walk */ }
+  }
+  function deferArgs(args, label) { deferCallables(args, label, 0, []); }
+
   // --- the ghost ------------------------------------------------------------
   function ghost(path) {
     var props = {};
@@ -316,16 +362,20 @@ const BOOTSTRAP = String.raw`
         // src/href assignments are how scripts hand a URL to the browser.
         var net = (prop === "src" || prop === "href") ? "script" : undefined;
         record(value, full, net);
+        // el.onload = fn is the assignment form of addEventListener.
+        if (typeof value === "function" && String(prop).indexOf("on") === 0) defer(value, full);
         props[prop] = value;
         return true;
       },
       has: function () { return true; },
       apply: function (target, self, args) {
         record(args, path + "()", undefined);
+        deferArgs(args, path + "()");
         return ghost(path + "()");
       },
       construct: function (target, args) {
         record(args, "new " + path + "()", undefined);
+        deferArgs(args, "new " + path + "()");
         return ghost("new " + path);
       },
     };
@@ -558,8 +608,16 @@ const BOOTSTRAP = String.raw`
   globalThis.queueMicrotask = function (fn) { if (typeof fn === "function") queue.push({ fn: fn, at: 0 }); };
 
   globalThis.__oracle_drain__ = function () {
-    queue.sort(function (a, b) { return a.at - b.at; });
-    for (var round = 0; round < 3 && queue.length; round++) {
+    // Deferred callbacks and timers feed each other: a DOMContentLoaded
+    // handler sets a timeout, the timeout registers another listener. Both
+    // queues are worked in the same rounds so either can wake the other, and
+    // the round cap keeps a self-rescheduling animation loop finite.
+    for (var round = 0; round < 4 && (queue.length || deferred.length); round++) {
+      var callbacks = deferred.splice(0, 300);
+      for (var c = 0; c < callbacks.length; c++) {
+        try { callbacks[c].fn(ghost(callbacks[c].label + "<event>")); } catch (e) { /* a handler that throws has still had its chance */ }
+      }
+      queue.sort(function (a, b) { return a.at - b.at; });
       var batch = queue.splice(0, 200);
       for (var i = 0; i < batch.length; i++) { try { batch[i].fn(); } catch (e) {} }
     }

@@ -11,10 +11,22 @@
 import { useEffect, useMemo, useState } from "react"
 import type { Theme } from "../theme.js"
 
+// Five rows of 5x5 glyphs, then a blank sixth. Every row must be exactly the
+// same length or the sweep lands on a different column per row and the box
+// measures ragged.
+//
+// The blank row is part of the art rather than a spacer element on purpose.
+// Neither a sibling after this box nor a sixth child inside it survives
+// layout — both are measured to nothing and paint on top of the tagline. A
+// row that is present from the first measurement is the one form of breathing
+// room the layout keeps.
 const ART = [
-  "█▀█ █▀▄ █▀█ █▀▀ █   █▀▀",
-  "█ █ █▀▄ █▀█ █   █   █▀▀",
-  "▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀▀▀ ▀▀▀",
+  "▄▀▀▀▄  █▀▀▀▄  ▄▀▀▀▄  ▄▀▀▀▀  █      █▀▀▀▀",
+  "█   █  █   █  █   █  █      █      █    ",
+  "█   █  █▀▀▀▄  █▀▀▀█  █      █      █▀▀▀ ",
+  "█   █  █   █  █   █  █      █      █    ",
+  " ▀▀▀   ▀   ▀  ▀   ▀   ▀▀▀▀  ▀▀▀▀▀  ▀▀▀▀▀",
+  "                                        ",
 ]
 
 const GRID = ART.map((row) => [...row])
@@ -99,10 +111,8 @@ export function Logo({ theme, animated = true }: { theme: Theme; animated?: bool
   }, [phase, animated])
 
   return (
-    // Explicit height: the glyph rows contain half-blocks and spaces, and
-    // without a fixed height yoga measures the box short, letting whatever
-    // follows overlap the last row — the tagline was being drawn straight
-    // through the bottom of the wordmark.
+    // Explicit height: half-blocks and spaces measure short, and without it
+    // the tagline is drawn through the bottom row of the wordmark.
     <box style={{ flexDirection: "column", flexShrink: 0, height: ROWS }}>
       {GRID.map((row, rowIndex) => (
         <text key={rowIndex}>

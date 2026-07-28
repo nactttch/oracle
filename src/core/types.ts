@@ -74,6 +74,17 @@ export interface Candidate {
   encrypted?: boolean
   keyUri?: string
   keyMethod?: string
+  /**
+   * ClearKey material the page configured its own player with.
+   *
+   * This is not a break: ClearKey is the key system that has no protection by
+   * design — the page ships keyId and key to every visitor in the clear, and
+   * Oracle only repeats what the page already said out loud. A key that lives
+   * behind a licence server (Widevine, PlayReady, FairPlay) is never fetched
+   * and never appears here; those streams are reported as encrypted and left
+   * alone. See `encrypted` for that case.
+   */
+  clearKeys?: Array<{ keyId: string; key: string }>
   /** No #EXT-X-ENDLIST => live edge. */
   live?: boolean
   /** Playable URL after a signing service signed it, when one was needed. */

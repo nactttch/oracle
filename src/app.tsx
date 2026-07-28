@@ -297,7 +297,6 @@ export function App({ initialUrl, clipboardUrl, initialThemeMode, digOptions, on
       }}
     >
       <Logo theme={theme} animated={Boolean(process.stdout.isTTY)} />
-      <Gap />
       <text>
         <span fg={theme.dim}>{TAGLINE}</span>
       </text>

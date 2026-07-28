@@ -51,7 +51,7 @@ curl -fsSL https://bun.sh/install | bash
 Then clone and link it:
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/oracle.git
+git clone https://github.com/nactttch/oracle.git
 cd oracle
 bun install
 bun run build
@@ -205,6 +205,11 @@ URL that plays right now.
 
 This deliberately stops short of decryption. An AES-128 or Widevine stream is **reported as
 encrypted and left alone** — signing a request is authorisation plumbing, not breaking DRM.
+
+The one thing Oracle does repeat is ClearKey. That is the key system with no protection by
+design: the page ships `keyId` and `key` to every visitor in the clear, and Oracle reports
+what the page already said out loud, as `clearKeys` on the stream. A key that lives behind a
+licence server — Widevine, PlayReady, FairPlay — is never requested and never appears.
 
 ### 6. Verification
 

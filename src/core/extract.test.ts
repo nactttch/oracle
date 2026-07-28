@@ -166,3 +166,25 @@ describe("mime types are not urls", () => {
     expect(found.some((url) => url.includes("vnd.apple"))).toBe(false)
   })
 })
+
+describe("player chrome is not the stream", () => {
+  test("a logo or about link is rejected even though the leaf is a config key", () => {
+    // Branded players carry aboutlink, logo.link and a share URL next to the
+    // file they actually play. Without this every one of them donates the
+    // station's homepage as a candidate.
+    expect(isStreamBearingPath("jwplayer().setup()[0].logo.link")).toBe(false)
+    expect(isStreamBearingPath("jwplayer().setup()[0].sharing.link")).toBe(false)
+    expect(isStreamBearingPath("player.setup()[0].logo.file")).toBe(false)
+  })
+
+  test("the real file key still passes", () => {
+    expect(isStreamBearingPath("jwplayer().setup()[0].file")).toBe(true)
+    expect(isStreamBearingPath("jwplayer().setup()[0].sources[0].src")).toBe(true)
+  })
+
+  test("share link-outs are junk", () => {
+    expect(isJunk("https://t.me/somechannel")).toBe(true)
+    expect(isJunk("https://telegram.org/api")).toBe(true)
+    expect(isJunk("https://cdn.tld/live/index.m3u8")).toBe(false)
+  })
+})

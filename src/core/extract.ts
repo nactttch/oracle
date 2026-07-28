@@ -68,6 +68,18 @@ const JUNK = new RegExp(
     "cloudflareinsights|hotjar|sentry\\.io|/favicon",
     // Source-comment URLs from bundled libraries, never a stream.
     "github\\.com/|stackoverflow\\.com|npmjs\\.(?:com|org)|w3schools",
+    // Share and "about this player" link-outs. A player config routinely
+    // carries aboutlink, a logo link and a Telegram invite next to the file
+    // it actually plays; following them turns one page into a crawl of
+    // telegram.org. None of these hosts has ever been the stream.
+    "(?:^|//|\\.)t\\.me/|telegram\\.(?:org|me)|wa\\.me/|whatsapp\\.com",
+    "instagram\\.com|linkedin\\.com|pinterest\\.|reddit\\.com|tumblr\\.com",
+    "apis\\.google\\.com|plus\\.google\\.com|/intent/tweet",
+    // Search and Google's own asset plumbing. A page that links to a Google
+    // search, or loads a widget that does, otherwise drags the whole of
+    // /xjs/_/js/ into the crawl — hundreds of requests, never a stream.
+    "gstatic\\.com|/xjs/_/|google\\.com/(?:async|search|url|recaptcha)",
+    "bing\\.com/|duckduckgo\\.com/|yandex\\.(?:ru|com)/",
   ].join("|"),
   "i",
 )
@@ -173,10 +185,26 @@ export const CONFIG_KEYS = new Set([
   "play_url", "playurl", "content_url", "href",
 ])
 
+/**
+ * Player-chrome containers. Their `link`, `url` and `file` keys are real config
+ * keys pointing at real URLs — the station's homepage, the watermark PNG, the
+ * "about this player" page — and none of them is ever the stream. Without this
+ * every branded player donates its own website as a candidate.
+ */
+const CHROME_PARENTS = new Set([
+  "logo", "about", "abouttext", "sharing", "share", "related", "advertising",
+  "ads", "ga", "analytics", "skin", "branding", "watermark", "cast", "plugins",
+  "provider", "author", "publisher", "menu", "button", "buttons",
+])
+
 /** True when a honeypot path like `jwplayer().setup()[0].file` names a stream. */
 export function isStreamBearingPath(path: string): boolean {
-  const leaf = path.split(/[.[\]()]/).filter(Boolean).pop()
-  return leaf ? CONFIG_KEYS.has(leaf.toLowerCase()) : false
+  const segments = path.split(/[.[\]()]/).filter(Boolean)
+  const leaf = segments.pop()
+  if (!leaf || !CONFIG_KEYS.has(leaf.toLowerCase())) return false
+  const parent = segments.pop()
+  if (parent && CHROME_PARENTS.has(parent.toLowerCase())) return false
+  return true
 }
 
 /**

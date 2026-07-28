@@ -26,7 +26,7 @@ import {
   isStreamBearingPath,
 } from "./extract.js"
 import { isDashManifest, isPlaylist } from "./hls.js"
-import { createHoneypot, type HoneypotSession } from "./sandbox.js"
+import { createHoneypot, type HoneypotSession, type SandboxHit } from "./sandbox.js"
 import { looksLikeApiResponse, rankApiBases, synthesizeEndpoints } from "./api.js"
 import { findTokenEndpoints } from "./token.js"
 import { initialConfidence, probeCandidate } from "./probe.js"
@@ -351,6 +351,7 @@ export class Oracle {
   /** Runs code in the honeypot and turns its hits into candidates and tasks. */
   private reapSession(result: HoneypotSession, documentUrl: string, task: Task): Task[] {
     const children: Task[] = []
+    const clearKeys = collectClearKeys(result.hits)
 
     if (result.hits.length) {
       this.report({
@@ -375,6 +376,9 @@ export class Oracle {
           depth: task.depth,
           server: task.server,
           referer: documentUrl,
+          // The keys were configured on the same player call that named this
+          // file, so they belong to it.
+          clearKeys: clearKeys.length ? clearKeys : undefined,
         })
         continue
       }
@@ -531,7 +535,14 @@ export class Oracle {
 
   private addCandidate(
     url: string,
-    meta: { origin: string; via: Technique[]; depth: number; server?: string; referer?: string },
+    meta: {
+      origin: string
+      via: Technique[]
+      depth: number
+      server?: string
+      referer?: string
+      clearKeys?: Array<{ keyId: string; key: string }>
+    },
   ) {
     if (isJunk(url) || !isPlausibleStream(url)) return
     const identity = key(url)
@@ -541,6 +552,7 @@ export class Oracle {
       const merged = new Set([...existing.via, ...meta.via])
       existing.via = [...merged]
       if (!existing.server && meta.server) existing.server = meta.server
+      if (!existing.clearKeys && meta.clearKeys) existing.clearKeys = meta.clearKeys
       return
     }
     if (this.candidates.size >= 600) return
@@ -555,6 +567,7 @@ export class Oracle {
       confidence: initialConfidence({ url, kind: classify(url), via }),
       headers: meta.referer ? { referer: meta.referer } : {},
       server: meta.server,
+      clearKeys: meta.clearKeys,
     }
     this.candidates.set(identity, candidate)
     this.report({ type: "candidate", candidate })
@@ -732,6 +745,7 @@ export class Oracle {
    */
   private rank(): Candidate[] {
     return this.dropShadows([...this.candidates.values()])
+      .filter(isNotAWebPage)
       .map(demoteUnplayableMaster)
       .sort((a, b) => {
         // Verified beats unverified, then confidence, then shallower depth.
@@ -845,6 +859,54 @@ function containsPlayerHints(code: string): boolean {
 
 function dedupeTechniques(techniques: Technique[]): Technique[] {
   return [...new Set(techniques)]
+}
+
+/**
+ * Drops candidates the prober fetched and found to be an ordinary web page.
+ *
+ * These are settled facts, not guesses: the request was made, it returned 200,
+ * and the body was HTML. Keeping them only pads the result list with the
+ * player's own "about" page and whatever the crawl wandered into. Anything
+ * that failed to load stays — a geo-blocked stream is still the answer, and
+ * hiding it would be the more expensive mistake.
+ */
+function isNotAWebPage(candidate: Candidate): boolean {
+  return !(candidate.verified === false && candidate.status === 200 && candidate.note === "html, not a stream")
+}
+
+/**
+ * Pairs up ClearKey material the page handed to its own player.
+ *
+ * Players spell the same thing several ways — jwplayer takes
+ * `drm.clearkey.{keyId,key}`, video.js and Shaka take
+ * `keySystems["org.w3.org.clearkey"]` — but all of them put the id and the key
+ * side by side under one parent. Grouping by that parent keeps the pairs
+ * straight when a manifest declares more than one.
+ *
+ * Only ClearKey is collected, and only when the page states it in the clear.
+ * Nothing here contacts a licence server.
+ */
+export function collectClearKeys(hits: SandboxHit[]): Array<{ keyId: string; key: string }> {
+  const groups = new Map<string, { keyId?: string; key?: string }>()
+
+  for (const hit of hits) {
+    const match = /^(.*clear[_-]?key.*)\.(keyid|key|kid|k)$/i.exec(hit.path)
+    if (!match) continue
+    // Hex or base64url, and long enough to be real key material.
+    if (!/^[0-9a-f]{16,}$/i.test(hit.value) && !/^[\w-]{16,}={0,2}$/.test(hit.value)) continue
+    const parent = match[1]!
+    const field = match[2]!.toLowerCase()
+    const group = groups.get(parent) ?? {}
+    if (field === "keyid" || field === "kid") group.keyId = hit.value
+    else group.key = hit.value
+    groups.set(parent, group)
+  }
+
+  const out: Array<{ keyId: string; key: string }> = []
+  for (const group of groups.values()) {
+    if (group.keyId && group.key) out.push({ keyId: group.keyId, key: group.key })
+  }
+  return out
 }
 
 function dedupeTasks(tasks: Task[]): Task[] {

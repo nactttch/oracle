@@ -59,10 +59,17 @@ export function Spinner({ theme, active = true }: { theme: Theme; active?: boole
   return <span fg={theme.accent}>{active ? SPINNER_FRAMES[frame] : "·"}</span>
 }
 
-/** Blank lines that yoga can't collapse when content overflows. */
+/**
+ * Blank lines that yoga can't collapse when content overflows.
+ *
+ * The height is stated rather than measured. A box whose only content is a
+ * space still gets measured short often enough that the neighbouring element
+ * draws straight over it — the same way the tagline once ran through the
+ * bottom row of the wordmark.
+ */
 export function Gap({ lines = 1 }: { lines?: number }) {
   return (
-    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+    <box style={{ flexDirection: "column", flexShrink: 0, height: lines }}>
       {Array.from({ length: lines }, (_, index) => (
         <text key={index}> </text>
       ))}

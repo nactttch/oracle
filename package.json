@@ -37,6 +37,15 @@
     "video"
   ],
   "license": "MIT",
+  "author": "nactttch",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nactttch/oracle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nactttch/oracle/issues"
+  },
+  "homepage": "https://github.com/nactttch/oracle#readme",
   "dependencies": {
     "@opentui/core": "^0.4.5",
     "@opentui/react": "^0.4.5",

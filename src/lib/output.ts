@@ -36,6 +36,7 @@ export function toJson(result: DigResult): string {
         encrypted: candidate.encrypted ?? false,
         keyUri: candidate.keyUri ?? null,
         keyMethod: candidate.keyMethod ?? null,
+        clearKeys: candidate.clearKeys ?? [],
         signedUrl: candidate.signedUrl ?? null,
         tokenEndpoint: candidate.tokenEndpoint ?? null,
         status: candidate.status ?? null,
